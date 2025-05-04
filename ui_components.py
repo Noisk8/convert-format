@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                          QMessageBox, QSplitter, QFrame, QTabWidget, QScrollArea, QStatusBar)
 from PyQt5.QtCore import Qt, QUrl, pyqtSignal, QSize, QMimeData
 from PyQt5.QtGui import QDrag, QIcon, QColor, QPalette, QFont, QPixmap
+import os
 
 class DragDropListWidget(QListWidget):
     """Lista personalizada que admite arrastrar y soltar archivos."""
@@ -136,26 +137,23 @@ class FileListWidget(QWidget):
         
         # Lista de archivos
         self.file_list = DragDropListWidget()
-        self.file_list.currentItemChanged.connect(self._on_item_selected)
+        self.file_list.itemClicked.connect(self._on_item_clicked)
+        self.file_list.files_dropped.connect(self._on_files_dropped)
         layout.addWidget(self.file_list)
         
-        # Botones de acción
-        button_layout = QHBoxLayout()
+        # Botones
+        buttons_layout = QHBoxLayout()
         
-        self.add_button = QPushButton("Añadir")
+        self.add_button = QPushButton("Añadir Archivos")
         self.add_button.clicked.connect(self._on_add_clicked)
         
-        self.remove_button = QPushButton("Eliminar")
+        self.remove_button = QPushButton("Eliminar Seleccionados")
         self.remove_button.clicked.connect(self._on_remove_clicked)
         
-        self.clear_button = QPushButton("Limpiar")
-        self.clear_button.clicked.connect(self._on_clear_clicked)
+        buttons_layout.addWidget(self.add_button)
+        buttons_layout.addWidget(self.remove_button)
         
-        button_layout.addWidget(self.add_button)
-        button_layout.addWidget(self.remove_button)
-        button_layout.addWidget(self.clear_button)
-        
-        layout.addLayout(button_layout)
+        layout.addLayout(buttons_layout)
         
         # Botones de conversión
         convert_layout = QHBoxLayout()
@@ -177,12 +175,63 @@ class FileListWidget(QWidget):
         
         # Establecer layout
         self.setLayout(layout)
+        
+        # Diccionario para mantener el estado de los archivos
+        self.file_statuses = {}  # Clave: ruta del archivo, Valor: estado (convirtiendo, convertido, etc.)
+
+    def set_file_status(self, file_path, status):
+        """
+        Establece el estado de un archivo en la lista.
+        
+        Args:
+            file_path: Ruta al archivo
+            status: Estado del archivo ('convirtiendo', 'convertido', 'error', etc.)
+        """
+        # Guardar el estado del archivo
+        self.file_statuses[file_path] = status
+        
+        # Buscar el item en la lista
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item.data(Qt.UserRole) == file_path:
+                # Actualizar el texto del item con el estado
+                file_name = os.path.basename(file_path)
+                
+                # Cambiar el color del texto según el estado
+                if status == "convirtiendo":
+                    item.setText(f"{file_name} [Convirtiendo...]")
+                    item.setForeground(QColor("#FFCC00"))  # Amarillo
+                elif status == "convertido":
+                    item.setText(f"{file_name} [Convertido]")
+                    item.setForeground(QColor("#00FF00"))  # Verde
+                elif status == "error":
+                    item.setText(f"{file_name} [Error]")
+                    item.setForeground(QColor("#FF0000"))  # Rojo
+                else:
+                    item.setText(file_name)
+                    item.setForeground(QColor("#FFFFFF"))  # Blanco
+                
+                break
     
-    def _on_item_selected(self, current, previous):
-        """Maneja el evento de selección de un elemento en la lista."""
-        if current:
-            file_path = current.data(Qt.UserRole)
-            self.file_selected.emit(file_path)
+    def _on_item_clicked(self, item):
+        """Maneja el evento de clic en un elemento de la lista."""
+        file_path = item.data(Qt.UserRole)
+        self.file_selected.emit(file_path)
+    
+    def _on_files_dropped(self, file_paths):
+        """Maneja el evento de archivos arrastrados y soltados en la lista."""
+        for file_path in file_paths:
+            # Verificar si el archivo ya está en la lista
+            found = False
+            for i in range(self.file_list.count()):
+                if self.file_list.item(i).data(Qt.UserRole) == file_path:
+                    found = True
+                    break
+            
+            if not found:
+                item = QListWidgetItem(file_path.split('/')[-1])
+                item.setData(Qt.UserRole, file_path)
+                self.file_list.addItem(item)
     
     def _on_add_clicked(self):
         """Maneja el evento de clic en el botón Añadir."""
@@ -209,10 +258,6 @@ class FileListWidget(QWidget):
     def _on_remove_clicked(self):
         """Maneja el evento de clic en el botón Eliminar."""
         self.file_list.remove_selected_items()
-    
-    def _on_clear_clicked(self):
-        """Maneja el evento de clic en el botón Limpiar."""
-        self.file_list.clear()
     
     def _on_convert_selected_clicked(self):
         """Maneja el evento de clic en el botón Convertir Seleccionados."""
@@ -552,6 +597,13 @@ class StatusBar(QStatusBar):
         self.status_text = QLabel("Listo")
         self.addWidget(self.status_text)
         
+        # Barra de progreso
+        self.progress_bar = CustomProgressBar()
+        self.progress_bar.setFixedWidth(150)
+        self.progress_bar.setValue(0)
+        self.addPermanentWidget(self.progress_bar)
+        self.progress_bar.hide()  # Ocultar inicialmente
+        
         # Aplicar estilo
         self.setStyleSheet("""
             QStatusBar {
@@ -574,6 +626,9 @@ class StatusBar(QStatusBar):
         icon_map = {
             "listo": "🟢", # verde
             "procesando": "🟡", # amarillo
+            "convirtiendo": "🟡", # amarillo
+            "reproduciendo": "🔵", # azul
+            "pausado": "⏸️", # pausa
             "error": "🔴",  # rojo
             "completado": "✅" # marca de verificación
         }
@@ -588,7 +643,27 @@ class StatusBar(QStatusBar):
             default_messages = {
                 "listo": "Listo",
                 "procesando": "Procesando...",
+                "convirtiendo": "Convirtiendo...",
+                "reproduciendo": "Reproduciendo...",
+                "pausado": "Pausado",
                 "error": "Error",
                 "completado": "Completado"
             }
             self.status_text.setText(default_messages.get(status.lower(), "Listo"))
+        
+        # Mostrar u ocultar barra de progreso según el estado
+        if status.lower() in ["procesando", "convirtiendo"]:
+            self.progress_bar.show()
+        else:
+            self.progress_bar.hide()
+            self.progress_bar.setValue(0)
+    
+    def set_progress(self, progress):
+        """
+        Establece el valor de la barra de progreso.
+        
+        Args:
+            progress: Valor de progreso (0-100)
+        """
+        self.progress_bar.show()
+        self.progress_bar.setValue(progress)

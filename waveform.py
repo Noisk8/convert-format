@@ -7,7 +7,14 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout
 from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap
 import os
-import librosa
+
+# Hacer librosa opcional
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    LIBROSA_AVAILABLE = False
+
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.wave import WAVE
@@ -34,11 +41,12 @@ class WaveformWorker(QThread):
             # Reducir datos para visualización más rápida (submuestreo)
             # Solo tomar 1 de cada N muestras para acelerar el rendering
             if len(data) > 100000:
-                # Calcular factor de reducción
-                reduction_factor = len(data) // 50000
+                # Calcular factor de reducción más agresivo para archivos grandes
+                target_samples = 10000  # Número ideal de muestras para visualización fluida
+                reduction_factor = max(1, len(data) // target_samples)
                 data = data[::reduction_factor]
                 sr = sr // reduction_factor
-                
+            
             self.finished.emit(data, sr)
         except Exception as e:
             self.error.emit(str(e))
@@ -196,74 +204,49 @@ class WaveformCanvas(FigureCanvasQTAgg):
         # Crear array de tiempo
         time = np.linspace(0, duration, len(audio_data))
         
-        # Crear segmentos para la forma de onda
-        segments = []
-        for i in range(len(time) - 1):
-            segments.append(((time[i], audio_data[i]), (time[i+1], audio_data[i+1])))
+        # Usar LineCollection para renderizado más eficiente
+        points = np.array([time, audio_data]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
         
-        # Crear mapa de colores con degradado
-        cmap = LinearSegmentedColormap.from_list('BlueToTurquoise', ['#0080FF', '#00FFFF'])
+        # Configurar escala de color (más eficiente con menos puntos en el gradiente)
+        norm = plt.Normalize(-1.0, 1.0)
+        cmap = LinearSegmentedColormap.from_list("", ["#0088FF", "#00FFFF"])
+        lc = LineCollection(segments, cmap=cmap, norm=norm)
+        lc.set_array(audio_data)
+        lc.set_linewidth(1.5)
         
-        # Normalizar colores basados en posición horizontal
-        norm = plt.Normalize(time.min(), time.max())
-        
-        # Crear colección de líneas con colores gradientes
-        lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=1.2, alpha=0.8)
-        lc.set_array(time)
+        # Añadir al gráfico
         line = self.ax.add_collection(lc)
-        
-        # Añadir línea para la posición actual (efecto neón)
-        self.position_line = self.ax.axvline(x=0, color='#FF00FF', linestyle='-', linewidth=2, alpha=0.9)
         
         # Configurar límites
         self.ax.set_xlim(0, duration)
         self.ax.set_ylim(-1.1, 1.1)
         
-        # Calcular marcas para el eje X basadas en estándar DJ
-        # Asumimos 128 BPM como estándar (ajustable según metadatos, si estuvieran disponibles)
+        # Añadir línea de posición actual
+        self.position_line = self.ax.axvline(x=0, color='#FF00FF', linewidth=1.0)
+        
+        # Obtener BPM para mostrar marcadores de tiempo
         bpm = get_song_bpm(self.audio_path)
         
-        # Duración de un beat en segundos (60 segundos / BPM)
-        beat_duration = 60 / bpm
-        
-        # Número total de beats en la pista
-        total_beats = int(duration / beat_duration)
-        
-        # Generar marcas para compases (cada 4 beats)
-        measures = np.arange(0, total_beats + 1, 4) * beat_duration
-        measure_labels = [f"{int(i/4)+1}.1" for i in range(0, total_beats + 1, 4)]
-        
-        # Generar marcas para beats
-        beats = np.arange(0, total_beats + 1) * beat_duration
-        beat_labels = []
-        for i in range(0, total_beats + 1):
-            measure = int(i / 4) + 1
-            beat_in_measure = (i % 4) + 1
-            beat_labels.append(f"{measure}.{beat_in_measure}")
+        # Simplificar las marcas de tiempo para mejorar el rendimiento
+        if duration > 60:  # Solo para archivos largos
+            self.ax.set_xticks(np.linspace(0, duration, min(10, int(duration/10)+1)))
+        else:
+            # Duración de un beat en segundos (60 segundos / BPM)
+            beat_duration = 60 / bpm
             
-        # Configurar marcas para el eje X
-        if duration <= 30:  # Para duraciones cortas, mostrar todos los beats
-            self.ax.set_xticks(beats)
-            self.ax.set_xticklabels(beat_labels, rotation=45, fontsize=8)
-        else:  # Para duraciones largas, mostrar solo los compases
-            self.ax.set_xticks(measures)
-            self.ax.set_xticklabels(measure_labels, rotation=45, fontsize=8)
+            # Para archivos cortos, mostrar menos compases para mejor rendimiento
+            # Mostrar solo compases principales (cada 4 beats)
+            total_measures = int(duration / (4 * beat_duration))
+            if total_measures > 10:  # Si hay muchos compases, mostrar solo algunos
+                measure_interval = max(1, total_measures // 10)
+                measures = np.arange(0, total_measures + 1, measure_interval) * 4 * beat_duration
+                measure_labels = [f"{int(i/measure_interval)+1}" for i in range(0, len(measures))]
+                self.ax.set_xticks(measures)
+                self.ax.set_xticklabels(measure_labels)
         
-        # Añadir líneas verticales para los compases (más prominentes)
-        for measure in measures:
-            self.ax.axvline(x=measure, color='#00FFFF', linestyle='-', linewidth=0.8, alpha=0.3)
-            
-        # Añadir líneas verticales más sutiles para los beats que no son inicio de compás
-        for beat in beats:
-            if beat not in measures:  # Si no es inicio de compás
-                self.ax.axvline(x=beat, color='#00FFFF', linestyle=':', linewidth=0.5, alpha=0.2)
-        
-        # Configurar etiquetas y estilo
-        self.ax.set_xlabel('Compás.Beat', color='#00FFFF')
-        self.ax.set_ylabel('Amplitud', color='#00FFFF')
-        self.ax.grid(False)  # Desactivamos el grid predeterminado ya que tenemos nuestras propias líneas
-        
-        # Configurar estilo para ejes
+        # Configurar estilo del gráfico
+        self.ax.set_facecolor('#212121')
         self.ax.tick_params(axis='x', colors='#00FFFF')
         self.ax.tick_params(axis='y', colors='#00FFFF')
         self.ax.spines['bottom'].set_color('#444444')
@@ -271,16 +254,17 @@ class WaveformCanvas(FigureCanvasQTAgg):
         self.ax.spines['left'].set_color('#444444')
         self.ax.spines['right'].set_color('#444444')
         
-        # Etiqueta informativa sobre los beats
+        # Etiqueta informativa sobre los beats (simplificada)
         bpm_text = f"BPM: {bpm}"
         self.ax.text(0.98, 0.9, bpm_text, transform=self.ax.transAxes, ha='right', 
-                    color='#00FFFF', fontsize=10, fontweight='bold', alpha=0.7,
-                    bbox=dict(facecolor='#212121', edgecolor='#00FFFF', boxstyle='round,pad=0.5', alpha=0.7))
+                    color='#00FFFF', fontsize=10, fontweight='bold', alpha=0.7)
         
-        # Actualizamos la figura
+        # Actualizar figura (optimizado)
         self.fig.set_facecolor('#212121')
         self.fig.tight_layout()
-        self.draw()
+        
+        # Usar draw_idle para mejorar rendimiento en vez de draw completo
+        self.draw_idle()
     
     @pyqtSlot(str)
     def _handle_error(self, error_message):
@@ -398,6 +382,9 @@ def detect_bpm_with_librosa(audio_path):
     Returns:
         BPM detectado o None si hay un error
     """
+    if not LIBROSA_AVAILABLE:
+        return None
+    
     try:
         # Cargar solo los primeros 60 segundos para análisis más rápido
         y, sr = librosa.load(audio_path, sr=None, duration=60)
@@ -411,10 +398,12 @@ def detect_bpm_with_librosa(audio_path):
         print(f"Error al detectar BPM con librosa: {e}")
         return None
         
+_bpm_cache = {}
+
 def get_song_bpm(audio_path):
     """
     Obtiene el BPM de una canción usando una combinación de métodos.
-    Primero intenta leer metadatos, luego realiza análisis de audio si es necesario.
+    Primero intenta leer de caché, luego metadatos, finalmente análisis de audio.
     
     Args:
         audio_path: Ruta al archivo de audio
@@ -422,15 +411,26 @@ def get_song_bpm(audio_path):
     Returns:
         BPM detectado o valor predeterminado (120) si no se puede detectar
     """
+    global _bpm_cache
+    
+    # Verificar si ya está en caché
+    if audio_path in _bpm_cache:
+        return _bpm_cache[audio_path]
+    
     # Intentar obtener de metadatos (más rápido)
     bpm = get_bpm_from_metadata(audio_path)
     if bpm:
+        _bpm_cache[audio_path] = bpm
         return bpm
         
     # Si no hay metadatos, intentar con análisis de audio
-    bpm = detect_bpm_with_librosa(audio_path)
-    if bpm:
-        return bpm
+    # Solo usar librosa si está disponible y solo como último recurso
+    if LIBROSA_AVAILABLE:
+        bpm = detect_bpm_with_librosa(audio_path)
+        if bpm:
+            _bpm_cache[audio_path] = bpm
+            return bpm
         
     # Valor predeterminado si no se puede detectar
-    return 120  # BPM estándar para muchos géneros musicales
+    _bpm_cache[audio_path] = 120  # BPM estándar para muchos géneros musicales
+    return 120

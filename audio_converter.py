@@ -52,18 +52,26 @@ class AudioConverter(QObject):
         # Obtener la memoria total del sistema en GB
         if PSUTIL_AVAILABLE:
             memory_gb = psutil.virtual_memory().total / (1024 * 1024 * 1024)
+            # También considerar memoria disponible para ser más adaptativo
+            available_memory_gb = psutil.virtual_memory().available / (1024 * 1024 * 1024)
+            memory_factor = min(1.0, available_memory_gb / 2.0)  # Factor de ajuste basado en memoria disponible
         else:
             # No hay forma directa de obtener memoria total con multiprocessing
             # Se asume un valor razonable para sistemas modernos
             memory_gb = 8
+            memory_factor = 0.8  # Valor conservador
         
-        # Limitar hilos basado en memoria disponible
+        # Limitar hilos basado en memoria disponible y factor de carga
+        thread_count = 0
         if memory_gb < 4:
-            return max(1, cpu_count - 1)  # Sistemas con poca memoria
+            thread_count = max(1, int(cpu_count * 0.5 * memory_factor))  # Sistemas con poca memoria
         elif memory_gb < 8:
-            return max(2, cpu_count)      # Sistemas con memoria media
+            thread_count = max(2, int(cpu_count * 0.75 * memory_factor))  # Sistemas con memoria media
         else:
-            return max(2, cpu_count + 2)  # Sistemas con mucha memoria
+            thread_count = max(2, int(cpu_count * memory_factor))  # Sistemas con mucha memoria
+        
+        # Limitar a un máximo razonable para evitar sobrecargar el sistema
+        return min(thread_count, 8)
         
     def check_ffmpeg(self):
         """Verifica si ffmpeg está instalado en el sistema."""
@@ -95,70 +103,54 @@ class AudioConverter(QObject):
             self.conversion_error.emit(input_file, "El archivo no existe")
             return None
             
-        # Si no se especifica un directorio de salida, usar el mismo del archivo de entrada
-        if not output_dir:
-            output_dir = os.path.dirname(input_file)
-            
-        # Siempre derivar nombre del archivo a partir del original y cambiar la extensión a .wav
-        base_name = os.path.basename(input_file)
-        name_without_ext = os.path.splitext(base_name)[0]
-        
-        # Si se proporciona un nombre personalizado, usar ese nombre pero asegurar que tenga extensión .wav
-        if output_file:
-            output_name = os.path.splitext(output_file)[0]
-            output_file = f"{output_name}.wav"
-        else:
-            output_file = f"{name_without_ext}.wav"
-            
-        output_path = os.path.join(output_dir, output_file)
-        
-        # Asegurar que el directorio de salida exista
-        os.makedirs(output_dir, exist_ok=True)
-        
         try:
-            # Parámetros para mantener la mayor calidad posible y maximizar rendimiento
+            # Determinar el directorio de salida
+            if not output_dir:
+                output_dir = os.path.dirname(input_file)
+                
+            # Asegurar que el directorio de salida exista
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Determinar el nombre del archivo de salida
+            if not output_file:
+                base_name = os.path.basename(input_file)
+                name_without_ext = os.path.splitext(base_name)[0]
+                output_file = f"{name_without_ext}.wav"
+                
+            # Ruta completa del archivo de salida
+            output_path = os.path.join(output_dir, output_file)
+            
+            # Definir el comando ffmpeg con configuraciones optimizadas
             cmd = [
                 self._ffmpeg_path,
                 '-i', input_file,           # Archivo de entrada
                 '-c:a', 'pcm_s24le',        # Codec de alta calidad (24 bits)
                 '-y',                        # Sobrescribir archivos sin preguntar
                 '-loglevel', 'error',        # Minimizar salida para mejor rendimiento
-                '-threads', '2',             # Usar 2 hilos por conversión
+                '-threads', str(max(2, self._get_optimal_thread_count() - 1)),  # Usar hilos óptimos por archivo
+                '-nostdin',                  # No usar entrada estándar (mejora rendimiento)
                 output_path
             ]
             
             # Emitir señal de inicio de conversión
             self.conversion_started.emit(input_file)
             
-            # Crear el proceso de ffmpeg
+            # Crear el proceso de ffmpeg con búferes optimizados
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
-                bufsize=1  # Línea por línea
+                bufsize=1024 * 1024  # Aumentar tamaño de búfer para mejor rendimiento
             )
             
-            # Guardar referencia al proceso actual
+            # Almacenar referencia al proceso
             self._current_conversions[input_file] = process
             
-            # Capturar la salida en tiempo real y actualizar el progreso
-            while True:
-                # Si se solicita cancelar, terminar el proceso
-                if self._cancel_conversion:
-                    process.terminate()
-                    if input_file in self._current_conversions:
-                        del self._current_conversions[input_file]
-                    return None
-                
-                # Leer una línea de la salida estándar
-                line = process.stdout.readline()
-                
-                # Si no hay más líneas y el proceso ha terminado, salir del bucle
-                if not line and process.poll() is not None:
-                    break
+            # Esperar a que termine el proceso
+            stdout, stderr = process.communicate()
             
-            # Limpiar la referencia al proceso
+            # Eliminar referencia al proceso
             if input_file in self._current_conversions:
                 del self._current_conversions[input_file]
             
@@ -169,7 +161,6 @@ class AudioConverter(QObject):
                 return output_path
             else:
                 # Capturar el error si la conversión falló
-                stderr = process.stderr.read()
                 self.conversion_error.emit(input_file, f"Error de ffmpeg: {stderr}")
                 return None
                 
@@ -177,7 +168,7 @@ class AudioConverter(QObject):
             # Manejar cualquier excepción durante la conversión
             self.conversion_error.emit(input_file, str(e))
             return None
-            
+    
     def _convert_single_file_for_batch(self, file_path, output_dir, total_files, current_index):
         """Convierte un solo archivo como parte de un lote."""
         # Verificar si se ha solicitado cancelar la conversión
@@ -192,32 +183,36 @@ class AudioConverter(QObject):
             # Derivar el nombre del archivo de salida (mismo nombre, extensión .wav)
             base_name = os.path.basename(file_path)
             name_without_ext = os.path.splitext(base_name)[0]
-            output_file = f"{name_without_ext}.wav"
-            output_path = os.path.join(output_dir, output_file)
+            output_path = os.path.join(output_dir, f"{name_without_ext}.wav")
             
-            # Asegurar que el directorio de salida exista
-            os.makedirs(output_dir, exist_ok=True)
+            # Optimización: comprobar si el archivo ya existe
+            if os.path.exists(output_path):
+                # Emitir señal de que ya está convertido
+                self.conversion_completed.emit(file_path, output_path)
+                return output_path
             
-            # Usar un comando ffmpeg directo para mayor velocidad
+            # Definir comando ffmpeg con optimizaciones
             cmd = [
                 self._ffmpeg_path,
-                '-i', file_path,             # Archivo de entrada
-                '-c:a', 'pcm_s24le',         # Codec de alta calidad (24 bits)
-                '-y',                         # Sobrescribir archivos sin preguntar
-                '-loglevel', 'error',         # Minimizar salida
-                '-threads', '2',              # Optimizar para hilos
+                '-i', file_path,
+                '-c:a', 'pcm_s24le',
+                '-y',
+                '-loglevel', 'error',
+                '-threads', str(max(2, self._get_optimal_thread_count() // 2)),  # Usar mitad de hilos óptimos por archivo para lotes
+                '-nostdin',                  # No usar entrada estándar (mejora rendimiento)
                 output_path
             ]
             
-            # Emitir señal de inicio de conversión
+            # Emitir señal de inicio
             self.conversion_started.emit(file_path)
             
-            # Usar subprocess.run para mayor simplicidad y menos sobrecarga
+            # Ejecutar conversión como proceso
             process = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                universal_newlines=True
+                universal_newlines=True,
+                check=False  # No lanzar excepciones, manejar el código de retorno manualmente
             )
             
             # Verificar si la conversión fue exitosa

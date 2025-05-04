@@ -140,19 +140,21 @@ class MainWindow(QMainWindow):
         self.audio_converter.batch_completed.connect(self.on_batch_completed)
         
         # Conexiones para el reproductor de audio
-        self.audio_player.position_changed.connect(self.player_controls.update_position)
-        self.audio_player.duration_changed.connect(self.player_controls.update_duration)
+        self.audio_player.position_changed.connect(self.on_player_position_changed)
+        self.audio_player.duration_changed.connect(self.on_player_duration_changed)
+        self.audio_player.playback_started.connect(self.on_playback_started)
+        self.audio_player.playback_paused.connect(self.on_playback_paused)
+        self.audio_player.playback_stopped.connect(self.on_playback_stopped)
         
         # Conexiones para los controles del reproductor
-        self.player_controls.play_requested.connect(self.audio_player.play)
-        self.player_controls.pause_requested.connect(self.audio_player.pause)
-        self.player_controls.stop_requested.connect(self.audio_player.stop)
-        self.player_controls.seek_requested.connect(self.audio_player.seek)
-        self.player_controls.volume_changed.connect(self.audio_player.set_volume)
+        self.player_controls.play_clicked.connect(self.audio_player.play)
+        self.player_controls.pause_clicked.connect(self.audio_player.pause)
+        self.player_controls.stop_clicked.connect(self.audio_player.stop)
+        self.player_controls.position_changed.connect(self.audio_player.seek)
         
         # Conexiones para el generador de forma de onda
         self.waveform_generator.waveform_generated.connect(self.on_waveform_generated)
-        self.waveform_generator.waveform_error.connect(self.on_waveform_error)
+        self.waveform_generator.generation_error.connect(self.on_waveform_error)
     
     def check_ffmpeg(self):
         """Verifica si ffmpeg está instalado."""
@@ -387,6 +389,41 @@ class MainWindow(QMainWindow):
             "Error de forma de onda",
             f"Error al generar la forma de onda:\n{error_message}"
         )
+    
+    def on_player_position_changed(self, position):
+        """
+        Maneja el cambio de posición durante la reproducción.
+        
+        Args:
+            position: Posición actual en milisegundos
+        """
+        # Actualizar la posición en los controles
+        self.player_controls.update_position(position)
+        
+        # Actualizar la posición en la visualización de la forma de onda
+        self.waveform_widget.update_position(position)
+    
+    def on_player_duration_changed(self, duration):
+        """
+        Maneja el cambio de duración al cargar un archivo.
+        
+        Args:
+            duration: Duración total en milisegundos
+        """
+        # Actualizar la duración en los controles
+        self.player_controls.update_duration(duration)
+    
+    def on_playback_started(self):
+        """Maneja el evento de inicio de reproducción."""
+        self.status_bar.set_status("reproduciendo", "Reproduciendo audio...")
+        
+    def on_playback_paused(self):
+        """Maneja el evento de pausa en la reproducción."""
+        self.status_bar.set_status("pausado", "Reproducción pausada")
+        
+    def on_playback_stopped(self):
+        """Maneja el evento de detención de la reproducción."""
+        self.status_bar.set_status("listo", "Reproducción detenida")
     
     def closeEvent(self, event):
         """Maneja el evento de cierre de la aplicación."""
