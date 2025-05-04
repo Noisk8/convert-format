@@ -411,7 +411,9 @@ def get_song_bpm(audio_path):
     Returns:
         BPM detectado o valor predeterminado (120) si no se puede detectar
     """
-    global _bpm_cache
+    # No necesitamos declarar global _bpm_cache porque solo
+    # estamos accediendo y modificando su contenido, no reasignando
+    # la variable en sí
     
     # Verificar si ya está en caché
     if audio_path in _bpm_cache:
