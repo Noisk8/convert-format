@@ -9,7 +9,15 @@ import os
 import subprocess
 import threading
 import concurrent.futures  # Para procesamiento paralelo de múltiples archivos
-import psutil              # Para determinar recursos del sistema
+
+# Hacer psutil opcional
+try:
+    import psutil              # Para determinar recursos del sistema
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    import multiprocessing     # Alternativa a psutil
+
 from PyQt5.QtCore import QObject, pyqtSignal
 from platform_utils import get_ffmpeg_binary  # Utilidad para encontrar ffmpeg en diferentes sistemas
 
@@ -36,9 +44,18 @@ class AudioConverter(QObject):
     def _get_optimal_thread_count(self):
         """Determina el número óptimo de hilos para la conversión basado en CPU y memoria."""
         # Obtener el número real de núcleos físicos (no virtuales)
-        cpu_count = psutil.cpu_count(logical=False) or 2
+        if PSUTIL_AVAILABLE:
+            cpu_count = psutil.cpu_count(logical=False) or 2
+        else:
+            cpu_count = multiprocessing.cpu_count()
+        
         # Obtener la memoria total del sistema en GB
-        memory_gb = psutil.virtual_memory().total / (1024 * 1024 * 1024)
+        if PSUTIL_AVAILABLE:
+            memory_gb = psutil.virtual_memory().total / (1024 * 1024 * 1024)
+        else:
+            # No hay forma directa de obtener memoria total con multiprocessing
+            # Se asume un valor razonable para sistemas modernos
+            memory_gb = 8
         
         # Limitar hilos basado en memoria disponible
         if memory_gb < 4:

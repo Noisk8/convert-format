@@ -49,10 +49,12 @@ class WaveformGenerator(QObject):
     
     generation_complete = pyqtSignal(object, object)  # Emite (datos de forma de onda, tasa de muestreo)
     generation_error = pyqtSignal(str)
+    waveform_generated = pyqtSignal(object, object)  # Señal que será usada por la UI
     
     def __init__(self):
         super().__init__()
         self.worker = None
+        self.generation_complete.connect(self.waveform_generated.emit)
     
     def generate_waveform(self, file_path):
         """
