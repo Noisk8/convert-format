@@ -201,18 +201,25 @@ class WaveformCanvas(FigureCanvasQTAgg):
         # Limpiar el gráfico anterior
         self.ax.clear()
         
+        # Convertir a decibeles para el eje Y
+        # Añadimos pequeño valor para evitar log(0)
+        eps = 1e-10
+        audio_data_abs = np.abs(audio_data) + eps
+        # Convertir a dB: 20 * log10(|x|)
+        audio_db = 20 * np.log10(audio_data_abs / np.max(audio_data_abs))
+        
         # Crear array de tiempo
         time = np.linspace(0, duration, len(audio_data))
         
         # Usar LineCollection para renderizado más eficiente
-        points = np.array([time, audio_data]).T.reshape(-1, 1, 2)
+        points = np.array([time, audio_db]).T.reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         
         # Configurar escala de color (más eficiente con menos puntos en el gradiente)
-        norm = plt.Normalize(-1.0, 1.0)
+        norm = plt.Normalize(-60, 0)  # Rango típico para dB: -60dB a 0dB
         cmap = LinearSegmentedColormap.from_list("", ["#0088FF", "#00FFFF"])
         lc = LineCollection(segments, cmap=cmap, norm=norm)
-        lc.set_array(audio_data)
+        lc.set_array(audio_db)
         lc.set_linewidth(1.5)
         
         # Añadir al gráfico
@@ -220,7 +227,11 @@ class WaveformCanvas(FigureCanvasQTAgg):
         
         # Configurar límites
         self.ax.set_xlim(0, duration)
-        self.ax.set_ylim(-1.1, 1.1)
+        self.ax.set_ylim(-60, 5)  # Rango de dB con pequeño margen positivo
+        
+        # Etiquetas de los ejes
+        self.ax.set_ylabel("Amplitud (dB)", color='#00FFFF', fontsize=10)
+        self.ax.set_xlabel("Tiempo (s)", color='#00FFFF', fontsize=10)
         
         # Añadir línea de posición actual
         self.position_line = self.ax.axvline(x=0, color='#FF00FF', linewidth=1.0)
@@ -254,10 +265,23 @@ class WaveformCanvas(FigureCanvasQTAgg):
         self.ax.spines['left'].set_color('#444444')
         self.ax.spines['right'].set_color('#444444')
         
-        # Etiqueta informativa sobre los beats (simplificada)
+        # BPM más visible - crear una caja destacada en la esquina
         bpm_text = f"BPM: {bpm}"
-        self.ax.text(0.98, 0.9, bpm_text, transform=self.ax.transAxes, ha='right', 
-                    color='#00FFFF', fontsize=10, fontweight='bold', alpha=0.7)
+        bpm_bbox = dict(
+            boxstyle="round,pad=0.5",
+            fc="#FF00FF",
+            ec="#FFFFFF",
+            alpha=0.8
+        )
+        self.ax.text(
+            0.98, 0.95, bpm_text, 
+            transform=self.ax.transAxes, 
+            ha='right', va='top',
+            color='white', 
+            fontsize=14, 
+            fontweight='bold',
+            bbox=bpm_bbox
+        )
         
         # Actualizar figura (optimizado)
         self.fig.set_facecolor('#212121')

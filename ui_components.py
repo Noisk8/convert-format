@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
                          QListWidget, QProgressBar, QFileDialog, QSlider, QListWidgetItem,
                          QMessageBox, QSplitter, QFrame, QTabWidget, QScrollArea, QStatusBar)
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal, QSize, QMimeData
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal, QSize, QMimeData, QEvent
 from PyQt5.QtGui import QDrag, QIcon, QColor, QPalette, QFont, QPixmap
 import os
 
@@ -502,71 +502,92 @@ class AudioInfoWidget(QWidget):
         layout.addWidget(title_label)
         
         # Campo para nombre de archivo
-        file_layout = QHBoxLayout()
-        file_layout.addWidget(QLabel("Archivo:"))
         self.file_name_label = QLabel("")
-        file_layout.addWidget(self.file_name_label)
-        layout.addLayout(file_layout)
+        self.file_name_label.setWordWrap(True)
+        self.file_name_label.setStyleSheet("font-weight: bold; color: #00FFFF;")
+        layout.addWidget(self.file_name_label)
         
-        # Campo para formato
+        # Campos de información
+        info_layout = QVBoxLayout()
+        info_layout.setSpacing(5)
+        
+        # Formato
         format_layout = QHBoxLayout()
-        format_layout.addWidget(QLabel("Formato:"))
+        format_title = QLabel("Formato:")
+        format_title.setStyleSheet("font-weight: bold;")
         self.format_label = QLabel("")
+        format_layout.addWidget(format_title)
         format_layout.addWidget(self.format_label)
-        layout.addLayout(format_layout)
+        format_layout.addStretch()
+        info_layout.addLayout(format_layout)
         
-        # Campo para frecuencia de muestreo
+        # Tasa de muestreo
         sample_rate_layout = QHBoxLayout()
-        sample_rate_layout.addWidget(QLabel("Frecuencia de muestreo:"))
+        sample_rate_title = QLabel("Tasa de muestreo:")
+        sample_rate_title.setStyleSheet("font-weight: bold;")
         self.sample_rate_label = QLabel("")
+        sample_rate_layout.addWidget(sample_rate_title)
         sample_rate_layout.addWidget(self.sample_rate_label)
-        layout.addLayout(sample_rate_layout)
+        sample_rate_layout.addStretch()
+        info_layout.addLayout(sample_rate_layout)
         
-        # Campo para canales
+        # Canales
         channels_layout = QHBoxLayout()
-        channels_layout.addWidget(QLabel("Canales:"))
+        channels_title = QLabel("Canales:")
+        channels_title.setStyleSheet("font-weight: bold;")
         self.channels_label = QLabel("")
+        channels_layout.addWidget(channels_title)
         channels_layout.addWidget(self.channels_label)
-        layout.addLayout(channels_layout)
+        channels_layout.addStretch()
+        info_layout.addLayout(channels_layout)
         
-        # Campo para duración
+        # Duración
         duration_layout = QHBoxLayout()
-        duration_layout.addWidget(QLabel("Duración:"))
+        duration_title = QLabel("Duración:")
+        duration_title.setStyleSheet("font-weight: bold;")
         self.duration_label = QLabel("")
+        duration_layout.addWidget(duration_title)
         duration_layout.addWidget(self.duration_label)
-        layout.addLayout(duration_layout)
+        duration_layout.addStretch()
+        info_layout.addLayout(duration_layout)
         
-        # Campo para profundidad de bits
+        # Profundidad de bits
         bit_depth_layout = QHBoxLayout()
-        bit_depth_layout.addWidget(QLabel("Profundidad de bits:"))
+        bit_depth_title = QLabel("Profundidad:")
+        bit_depth_title.setStyleSheet("font-weight: bold;")
         self.bit_depth_label = QLabel("")
+        bit_depth_layout.addWidget(bit_depth_title)
         bit_depth_layout.addWidget(self.bit_depth_label)
-        layout.addLayout(bit_depth_layout)
+        bit_depth_layout.addStretch()
+        info_layout.addLayout(bit_depth_layout)
+        
+        layout.addLayout(info_layout)
+        layout.addStretch()
         
         # Establecer layout
         self.setLayout(layout)
-        
-        # Añadir algo de estilo
-        self.setStyleSheet("""
-            QLabel {
-                margin: 2px;
-                min-width: 100px;
-            }
-        """)
     
-    def update_info(self, audio_info):
-        """Actualiza la información mostrada con los datos del archivo de audio."""
-        if "error" in audio_info:
+    def update_info(self, info_dict):
+        """Actualiza la información mostrada con los datos proporcionados."""
+        if not info_dict:
             self.clear_info()
             return
             
-        self.file_name_label.setText(audio_info.get("file_name", ""))
-        self.format_label.setText(audio_info.get("format", ""))
-        self.sample_rate_label.setText(f"{audio_info.get('samplerate', '')} Hz")
-        self.channels_label.setText(str(audio_info.get("channels", "")))
-        self.duration_label.setText(audio_info.get("duration", ""))
+        self.file_name_label.setText(info_dict.get("file_name", ""))
+        self.format_label.setText(info_dict.get("format", ""))
+        self.sample_rate_label.setText(f"{info_dict.get('samplerate', 0)} Hz")
         
-        bit_depth = audio_info.get("bit_depth", "")
+        channels = info_dict.get("channels", 0)
+        if channels == 1:
+            self.channels_label.setText("Mono")
+        elif channels == 2:
+            self.channels_label.setText("Estéreo")
+        else:
+            self.channels_label.setText(f"{channels} canales")
+            
+        self.duration_label.setText(info_dict.get("duration", ""))
+        
+        bit_depth = info_dict.get("bit_depth", "N/A")
         if bit_depth != "N/A":
             self.bit_depth_label.setText(f"{bit_depth} bits")
         else:
@@ -580,6 +601,21 @@ class AudioInfoWidget(QWidget):
         self.channels_label.setText("")
         self.duration_label.setText("")
         self.bit_depth_label.setText("")
+        
+    def event(self, event):
+        """
+        Maneja eventos personalizados para actualizaciones entre hilos.
+        Requerido para recibir CustomEvent desde hilos secundarios.
+        """
+        # Verificar si es un evento personalizado
+        if event.type() == getattr(event, "EVENT_TYPE", None):
+            # Manejar evento de actualización de información
+            if event.name == "update_info":
+                self.update_info(event.data)
+                return True
+        
+        # Para otros eventos, usar el manejador por defecto
+        return super().event(event)
 
 
 class StatusBar(QStatusBar):

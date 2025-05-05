@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 '''
-Módulo principal de la aplicación Convertidor FLAC a WAV para Denon DS-1200.
+Módulo principal de la aplicación Convertidor FLAC a WAV .
 Este archivo contiene la clase MainWindow que inicializa todos los componentes
 y coordina la interacción entre ellos para proporcionar una interfaz gráfica
 completa para la conversión de archivos de audio.
@@ -11,8 +11,9 @@ import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QMessageBox, QSplitter, QFileDialog,
                            QTabWidget, QLabel)
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QMetaObject, Q_ARG, QEvent
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QFontDatabase
+import threading
 
 # Importar módulos propios
 from audio_converter import AudioConverter   # Maneja la conversión de audio
@@ -24,16 +25,28 @@ from ui_components import (FileListWidget, PlayerControls, AudioInfoWidget,
 class MainWindow(QMainWindow):
     """Ventana principal de la aplicación."""
     
+    # Señales para comunicación segura entre hilos
+    update_status_signal = pyqtSignal(str, str)
+    update_waveform_signal = pyqtSignal(str)
+    
     def __init__(self):
         """Inicializa la ventana principal y sus componentes."""
         super().__init__()
         
         # Configurar la ventana
-        self.setWindowTitle("Convertidor FLAC a WAV para Denon DS-1200")
+        self.setWindowTitle("Convertidor FLAC a WAV")
         self.setMinimumSize(900, 700)  # Tamaño mínimo para buena usabilidad
         
         # Inicializar componentes
         self.init_components()
+        
+        # Inicializar variables de estado
+        self.current_file = None
+        self.converted_file = None
+        
+        # Conectar señales para actualización segura entre hilos
+        self.update_status_signal.connect(self.status_bar.set_status)
+        self.update_waveform_signal.connect(self.waveform_generator.generate_waveform)
         
         # Crear y configurar la interfaz
         self.init_ui()
@@ -61,10 +74,6 @@ class MainWindow(QMainWindow):
         self.waveform_widget = WaveformWidget()     # Visualización de forma de onda
         self.status_bar = StatusBar()               # Barra de estado
         
-        # Variables de estado
-        self.current_file = None      # Archivo actualmente seleccionado
-        self.converted_file = None    # Último archivo convertido
-    
     def init_ui(self):
         """Configura la interfaz de usuario."""
         # Widget central
@@ -178,8 +187,24 @@ class MainWindow(QMainWindow):
         # Mostrar estado
         self.status_bar.set_status("cargando", f"Cargando {os.path.basename(file_path)}...")
         
-        # Cargar el archivo en el reproductor
-        if self.audio_player.load_file(file_path):
+        # Verificar si el archivo existe
+        if not os.path.exists(file_path):
+            self.status_bar.set_status("error", f"Archivo no encontrado: {os.path.basename(file_path)}")
+            return
+            
+        # Usar un hilo separado para cargar la información del archivo y evitar bloquear la interfaz
+        threading.Thread(
+            target=self._load_file_info_async,
+            args=(file_path,),
+            daemon=True
+        ).start()
+    
+    def _load_file_info_async(self, file_path):
+        """Carga la información del archivo en un hilo separado para no bloquear la UI"""
+        try:
+            # Cargar el archivo en el reproductor
+            self.audio_player.load_file(file_path)
+            
             # Actualizar información del audio
             try:
                 import soundfile as sf
@@ -190,36 +215,37 @@ class MainWindow(QMainWindow):
                 minutes = int(duration_seconds // 60)
                 seconds = int(duration_seconds % 60)
                 
-                # Recopilar información básica del archivo
-                audio_info = {
+                # No podemos actualizar directamente widgets creados en el hilo principal
+                # desde un hilo secundario, así que emitimos señales
+                
+                # Actualizar información del audio (desde el hilo principal cuando regrese a la aplicación)
+                QApplication.postEvent(self.audio_info_widget, CustomEvent("update_info", {
                     "file_name": os.path.basename(file_path),
                     "samplerate": info.samplerate,
                     "channels": info.channels,
                     "format": info.format,
-                    "subtype": info.subtype,
+                    "subtype": getattr(info, "subtype", "N/A"),
                     "duration": f"{minutes}:{seconds:02d}",
                     "duration_seconds": duration_seconds,
                     "bit_depth": getattr(info, "bits_per_sample", "N/A")
-                }
+                }))
                 
-                # Mostrar información en el widget
-                self.audio_info_widget.update_info(audio_info)
+                # Actualizar estado - usando señal segura entre hilos
+                self.update_status_signal.emit("listo", f"Archivo cargado: {os.path.basename(file_path)}")
                 
-                # Generar y mostrar forma de onda
-                self.waveform_widget.update_waveform(file_path)
+                # Generar forma de onda - usando señal segura entre hilos
+                self.update_waveform_signal.emit(file_path)
                 
-                # Mostrar estado
-                self.status_bar.set_status("listo", f"Archivo cargado: {os.path.basename(file_path)}")
             except Exception as e:
-                self.status_bar.set_status("error", f"Error al cargar el archivo: {str(e)}")
-                QMessageBox.warning(
-                    self,
-                    "Error al cargar archivo",
-                    f"No se pudo obtener información del archivo:\n{str(e)}"
-                )
-        else:
-            self.status_bar.set_status("error", f"No se pudo cargar el archivo {os.path.basename(file_path)}")
-    
+                print(f"Error al obtener info del archivo: {e}")
+                # Usar señal para actualizar UI desde un hilo seguro
+                self.update_status_signal.emit("error", f"Error al cargar archivo: {str(e)}")
+                
+        except Exception as e:
+            print(f"Error al cargar archivo en reproductor: {e}")
+            # Usar señal para actualizar UI desde un hilo seguro
+            self.update_status_signal.emit("error", f"Error al cargar archivo: {str(e)}")
+
     def on_batch_convert_requested(self, file_list, output_dir):
         """
         Maneja el evento de solicitud de conversión por lotes.
@@ -438,14 +464,49 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+# Definir una clase de evento personalizado para actualizar widgets
+class CustomEvent(QEvent):
+    """Evento personalizado para comunicar datos entre hilos."""
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    
+    def __init__(self, name, data=None):
+        super().__init__(CustomEvent.EVENT_TYPE)
+        self.name = name
+        self.data = data if data is not None else {}
+
 # Punto de entrada de la aplicación
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # Configurar fuentes seguras que existen en todos los sistemas
+    font_database = QFontDatabase()
+    available_fonts = font_database.families()
+    
+    # Crear una lista de fuentes seguras que deberían existir en la mayoría de sistemas
+    safe_system_fonts = ["Arial", "Helvetica", "Sans Serif", "Segoe UI", "Roboto", "Noto Sans", "Liberation Sans"]
+    
+    # Elegir la primera fuente disponible
+    default_font = "Sans Serif"  # Fuente segura por defecto
+    for font in safe_system_fonts:
+        if font in available_fonts:
+            default_font = font
+            break
+    
+    # Configurar fuentes por defecto para la aplicación
+    app_font = QFont(default_font, 10)
+    app.setFont(app_font)
+    
+    # Imprimir información sobre la fuente seleccionada (solo para depuración, puedes quitar esto después)
+    print(f"Usando fuente: {default_font}")
     
     # Cargar y aplicar el estilo futurista global
     style_file = open(os.path.join(os.path.dirname(__file__), "style.qss"), "r")
     style = style_file.read()
     style_file.close()
+    
+    # Reemplazar cualquier referencia a fuentes específicas en el estilo
+    style = style.replace("Fira Sans", default_font)
+    style = style.replace("FiraCode Nerd Font Mono", "monospace")
     app.setStyleSheet(style)
     
     # Crear y mostrar la ventana principal
