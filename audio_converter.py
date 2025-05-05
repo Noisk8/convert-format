@@ -120,15 +120,23 @@ class AudioConverter(QObject):
             # Ruta completa del archivo de salida
             output_path = os.path.join(output_dir, output_file)
             
-            # Definir el comando ffmpeg con configuraciones optimizadas
+            # Definir el comando ffmpeg con configuraciones optimizadas específicamente para Denon DS-1200
             cmd = [
                 self._ffmpeg_path,
-                '-i', input_file,           # Archivo de entrada
-                '-c:a', 'pcm_s24le',        # Codec de alta calidad (24 bits)
-                '-y',                        # Sobrescribir archivos sin preguntar
-                '-loglevel', 'error',        # Minimizar salida para mejor rendimiento
+                '-i', input_file,              # Archivo de entrada
+                '-c:a', 'pcm_s16le',           # Codec PCM 16-bit (formato CD)
+                '-ar', '44100',                # Frecuencia de muestreo 44.1kHz (estándar CD)
+                '-ac', '2',                    # 2 canales (estéreo)
+                '-map_metadata', '-1',         # Eliminar todos los metadatos
+                '-fflags', '+bitexact',        # Modo bit-exacto para mayor compatibilidad
+                '-flags:a', '+bitexact',       # Modo bit-exacto para el audio
+                '-f', 'wav',                   # Formato WAV explícito
+                '-bitexact',                   # Asegura salida bit-exacta sin datos adicionales
+                '-rf64', 'never',              # Evitar RF64 (menos compatible)
+                '-y',                          # Sobrescribir archivos sin preguntar
+                '-loglevel', 'error',          # Minimizar salida para mejor rendimiento
                 '-threads', str(max(2, self._get_optimal_thread_count() - 1)),  # Usar hilos óptimos por archivo
-                '-nostdin',                  # No usar entrada estándar (mejora rendimiento)
+                '-nostdin',                    # No usar entrada estándar (mejora rendimiento)
                 output_path
             ]
             
@@ -191,15 +199,23 @@ class AudioConverter(QObject):
                 self.conversion_completed.emit(file_path, output_path)
                 return output_path
             
-            # Definir comando ffmpeg con optimizaciones
+            # Definir comando ffmpeg optimizado para Denon DS-1200
             cmd = [
                 self._ffmpeg_path,
                 '-i', file_path,
-                '-c:a', 'pcm_s24le',
+                '-c:a', 'pcm_s16le',           # Codec PCM 16-bit (formato CD)
+                '-ar', '44100',                # Frecuencia de muestreo 44.1kHz 
+                '-ac', '2',                    # 2 canales (estéreo)
+                '-map_metadata', '-1',         # Eliminar todos los metadatos
+                '-fflags', '+bitexact',        # Modo bit-exacto para mayor compatibilidad
+                '-flags:a', '+bitexact',       # Modo bit-exacto para el audio
+                '-f', 'wav',                   # Formato WAV explícito
+                '-bitexact',                   # Asegura salida bit-exacta
+                '-rf64', 'never',              # Evitar RF64 (menos compatible)
                 '-y',
                 '-loglevel', 'error',
-                '-threads', str(max(2, self._get_optimal_thread_count() // 2)),  # Usar mitad de hilos óptimos por archivo para lotes
-                '-nostdin',                  # No usar entrada estándar (mejora rendimiento)
+                '-threads', str(max(2, self._get_optimal_thread_count() // 2)),
+                '-nostdin',
                 output_path
             ]
             
